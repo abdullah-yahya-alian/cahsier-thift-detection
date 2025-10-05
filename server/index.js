@@ -6,9 +6,10 @@ import fs from 'fs';
 import sqlite3 from 'sqlite3';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { spawn } from 'child_process';
 
 const app = express();
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || 3003;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 const DATA_DIR = path.resolve('data');
 const CLIPS_DIR = path.join(DATA_DIR, 'clips');
@@ -143,6 +144,63 @@ app.get('/api/clips', authMiddleware, (req, res) => {
   db.all(`SELECT * FROM clips ${where} ORDER BY created_at DESC`, values, (err, rows) => {
     if (err) return res.status(500).json({ error: 'DB error' });
     res.json(rows);
+  });
+});
+
+// RTSP stream proxy endpoint
+app.get('/api/stream', (req, res) => {
+  const { url } = req.query;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'RTSP URL is required' });
+  }
+  
+  console.log('📡 Starting RTSP stream proxy for:', url);
+  
+  // Set headers for streaming
+  res.writeHead(200, {
+    'Content-Type': 'video/mp4',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  
+  // Use FFmpeg to convert RTSP to MP4 stream
+  const ffmpegPath = 'C:\\ffmpeg\\ffmpeg-8.0-essentials_build\\bin\\ffmpeg.exe';
+  const ffmpeg = spawn(ffmpegPath, [
+    '-i', url,
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast',
+    '-tune', 'zerolatency',
+    '-f', 'mp4',
+    '-movflags', 'frag_keyframe+empty_moov',
+    '-'
+  ]);
+  
+  ffmpeg.stdout.on('data', (data) => {
+    res.write(data);
+  });
+  
+  ffmpeg.stderr.on('data', (data) => {
+    console.log('FFmpeg stderr:', data.toString());
+  });
+  
+  ffmpeg.on('close', (code) => {
+    console.log('FFmpeg process exited with code:', code);
+    res.end();
+  });
+  
+  ffmpeg.on('error', (err) => {
+    console.error('FFmpeg error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Streaming failed' });
+    }
+  });
+  
+  // Handle client disconnect
+  req.on('close', () => {
+    console.log('Client disconnected, killing FFmpeg process');
+    ffmpeg.kill();
   });
 });
 

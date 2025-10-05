@@ -3,6 +3,7 @@ import type { PoseLandmarkerResult } from '../../types';
 import { CameraIcon, StopIcon } from '../Icons';
 
 type FacingMode = 'user' | 'environment';
+type StreamSource = 'webcam' | 'rtsp';
 
 const MonitorCashiers: React.FC = () => {
     const [cashierName, setCashierName] = useState('');
@@ -17,6 +18,8 @@ const MonitorCashiers: React.FC = () => {
     const [isAutoRecording, setIsAutoRecording] = useState(true);
     const [theftDetected, setTheftDetected] = useState(false);
     const [detectionSensitivity, setDetectionSensitivity] = useState(0.3);
+    const [streamSource, setStreamSource] = useState<StreamSource>('webcam');
+    const [rtspUrl, setRtspUrl] = useState('rtsp://admin:11111111a@192.168.1.120:554/Streaming/Channels/201');
 
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const chunksRef = useRef<Blob[]>([]);
@@ -364,29 +367,39 @@ const MonitorCashiers: React.FC = () => {
         animationFrameIdRef.current = requestAnimationFrame(predictLoop);
     }, [detectTheft, theftDetected, isAutoRecording]);
 
-    const startWebcamWithFacing = async (facing: FacingMode) => {
+    const startStream = async (facing?: FacingMode) => {
         if (!poseLandmarkerRef.current) return;
+        
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    width: 1280,
-                    height: 720,
-                    facingMode: { ideal: facing },
-                },
-                audio: false,
-            });
-            videoRef.current!.srcObject = stream;
-                videoRef.current!.addEventListener('loadeddata', () => {
+            if (streamSource === 'webcam') {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: 1280,
+                        height: 720,
+                        facingMode: { ideal: facing || cameraFacing },
+                    },
+                    audio: false,
+                });
+                videoRef.current!.srcObject = stream;
+            } else if (streamSource === 'rtsp') {
+                // For RTSP streams, use the server proxy
+                const proxyUrl = `/api/stream?url=${encodeURIComponent(rtspUrl)}`;
+                videoRef.current!.src = proxyUrl;
+                videoRef.current!.crossOrigin = 'anonymous';
+            }
+            
+            videoRef.current!.addEventListener('loadeddata', () => {
                 videoRef.current?.play();
                 setIsWebcamOn(true);
                 setStatusText(`Auto-monitoring enabled. Watching for suspicious behavior...`);
                 predictLoop();
-                // Auto-start recording when webcam starts
+                // Auto-start recording when stream starts
                 setTimeout(() => {
-                    console.log('🔄 Auto-starting recording when webcam loaded...', {
+                    console.log('🔄 Auto-starting recording when stream loaded...', {
                         isAutoRecording,
                         token: !!token,
-                        webcamOn: true
+                        streamOn: true,
+                        streamSource
                     });
                     if (isAutoRecording && token) {
                         startAutoRecording();
@@ -398,28 +411,50 @@ const MonitorCashiers: React.FC = () => {
                     }
                 }, 1000);
             }, { once: true });
+            
+            videoRef.current!.addEventListener('error', (e) => {
+                console.error("Stream error:", e);
+                if (streamSource === 'rtsp') {
+                    setStatusText("Could not connect to RTSP stream. Please check URL and network.");
+                } else {
+                    setStatusText("Could not access webcam. Please check permissions.");
+                }
+            });
+            
         } catch (err) {
-            console.error("Error accessing webcam:", err);
-            setStatusText("Could not access webcam. Please check permissions.");
+            console.error("Error starting stream:", err);
+            if (streamSource === 'rtsp') {
+                setStatusText("Could not connect to RTSP stream. Please check URL and network.");
+            } else {
+                setStatusText("Could not access webcam. Please check permissions.");
+            }
         }
     };
 
-    const stopWebcam = () => {
+    const stopStream = () => {
         if (animationFrameIdRef.current) cancelAnimationFrame(animationFrameIdRef.current);
-        const stream = videoRef.current?.srcObject as MediaStream;
-        stream?.getTracks().forEach(track => track.stop());
-        if (videoRef.current) {
-            videoRef.current.srcObject = null;
+        
+        if (streamSource === 'webcam') {
+            const stream = videoRef.current?.srcObject as MediaStream;
+            stream?.getTracks().forEach(track => track.stop());
+            if (videoRef.current) {
+                videoRef.current.srcObject = null;
+            }
+        } else if (streamSource === 'rtsp') {
+            if (videoRef.current) {
+                videoRef.current.src = '';
+            }
         }
+        
         setIsWebcamOn(false);
-        setStatusText("Webcam stopped.");
+        setStatusText(`${streamSource === 'webcam' ? 'Webcam' : 'RTSP stream'} stopped.`);
     };
 
     const switchCameraFacing = async (nextFacing: FacingMode) => {
         setCameraFacing(nextFacing);
-        if (isWebcamOn) {
-            stopWebcam();
-            await startWebcamWithFacing(nextFacing);
+        if (isWebcamOn && streamSource === 'webcam') {
+            stopStream();
+            await startStream(nextFacing);
         }
     };
 
@@ -709,32 +744,72 @@ const MonitorCashiers: React.FC = () => {
 
                 <div className="flex items-center gap-3 mb-4">
                     <button 
-                        onClick={() => isWebcamOn ? stopWebcam() : startWebcamWithFacing(cameraFacing)} 
+                        onClick={() => isWebcamOn ? stopStream() : startStream()} 
                         disabled={isLoadingModel} 
                         className={`px-5 py-3 font-semibold rounded-lg flex items-center gap-3 transition-colors duration-200 ${isWebcamOn ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white shadow-lg disabled:opacity-50 disabled:cursor-not-allowed`}
                     >
                         {isWebcamOn ? <><StopIcon /> Stop Monitoring</> : <><CameraIcon /> Start Monitoring</>}
                     </button>
-                    <div className="flex items-center gap-2 bg-gray-700/60 rounded-lg p-1">
-                        <button
-                            onClick={() => switchCameraFacing('user')}
-                            disabled={isLoadingModel}
-                            className={`px-3 py-2 text-sm rounded-md ${cameraFacing === 'user' ? 'bg-cyan-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
-                            title="Front camera"
-                        >Front</button>
-                        <button
-                            onClick={() => switchCameraFacing('environment')}
-                            disabled={isLoadingModel}
-                            className={`px-3 py-2 text-sm rounded-md ${cameraFacing === 'environment' ? 'bg-cyan-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
-                            title="Back camera"
-                        >Back</button>
-                    </div>
+                    {streamSource === 'webcam' && (
+                        <div className="flex items-center gap-2 bg-gray-700/60 rounded-lg p-1">
+                            <button
+                                onClick={() => switchCameraFacing('user')}
+                                disabled={isLoadingModel}
+                                className={`px-3 py-2 text-sm rounded-md ${cameraFacing === 'user' ? 'bg-cyan-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+                                title="Front camera"
+                            >Front</button>
+                            <button
+                                onClick={() => switchCameraFacing('environment')}
+                                disabled={isLoadingModel}
+                                className={`px-3 py-2 text-sm rounded-md ${cameraFacing === 'environment' ? 'bg-cyan-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+                                title="Back camera"
+                            >Back</button>
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex flex-col gap-3">
                     <label className="text-sm">Cashier name
                         <input className="ml-2 px-2 py-1 rounded bg-gray-700" value={cashierName} onChange={e => setCashierName(e.target.value)} placeholder="e.g. cashier1" />
                     </label>
+                    
+                    <div className="flex items-center gap-3">
+                        <label className="text-sm">Stream Source:</label>
+                        <div className="flex items-center gap-2 bg-gray-700/60 rounded-lg p-1">
+                            <button
+                                onClick={() => setStreamSource('webcam')}
+                                disabled={isWebcamOn}
+                                className={`px-3 py-2 text-sm rounded-md ${streamSource === 'webcam' ? 'bg-cyan-600 text-white' : 'bg-gray-700 hover:bg-gray-600'} ${isWebcamOn ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                title="Use webcam"
+                            >Webcam</button>
+                            <button
+                                onClick={() => setStreamSource('rtsp')}
+                                disabled={isWebcamOn}
+                                className={`px-3 py-2 text-sm rounded-md ${streamSource === 'rtsp' ? 'bg-cyan-600 text-white' : 'bg-gray-700 hover:bg-gray-600'} ${isWebcamOn ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                title="Use RTSP stream"
+                            >RTSP</button>
+                        </div>
+                    </div>
+                    
+                    {streamSource === 'rtsp' && (
+                        <div className="space-y-2">
+                            <label className="text-sm">RTSP URL
+                                <input 
+                                    className="ml-2 px-2 py-1 rounded bg-gray-700 w-full mt-1" 
+                                    value={rtspUrl} 
+                                    onChange={e => setRtspUrl(e.target.value)} 
+                                    placeholder="rtsp://username:password@ip:port/path"
+                                    disabled={isWebcamOn}
+                                />
+                            </label>
+                            <div className="text-xs text-yellow-400 bg-yellow-900/20 p-2 rounded">
+                                <strong>⚠️ RTSP Requirements:</strong><br/>
+                                • FFmpeg must be installed on the server<br/>
+                                • RTSP camera must be accessible from server<br/>
+                                • Stream will be converted to MP4 for browser compatibility
+                            </div>
+                        </div>
+                    )}
                     
                     <div className="flex items-center gap-2 text-sm">
                         <label>Detection Sensitivity:</label>
@@ -754,7 +829,8 @@ const MonitorCashiers: React.FC = () => {
                         <strong>System Status:</strong><br/>
                         • Recording: <span className={mediaRecorderRef.current?.state === 'recording' ? 'text-green-400' : 'text-gray-500'}>{mediaRecorderRef.current?.state || 'Not started'}</span><br/>
                         • Auto-recording: <span className={isAutoRecording ? 'text-green-400' : 'text-gray-500'}>{isAutoRecording ? 'ON' : 'OFF'}</span><br/>
-                        • Webcam: <span className={isWebcamOn ? 'text-green-400' : 'text-gray-500'}>{isWebcamOn ? 'ON' : 'OFF'}</span><br/>
+                        • Stream Source: <span className="text-cyan-400">{streamSource.toUpperCase()}</span><br/>
+                        • Stream Status: <span className={isWebcamOn ? 'text-green-400' : 'text-gray-500'}>{isWebcamOn ? 'ON' : 'OFF'}</span><br/>
                         • Authentication: <span className={token ? 'text-green-400' : 'text-red-400'}>{token ? 'Logged in' : 'Not logged in'}</span><br/>
                         • Video Chunks: <span className="text-cyan-400">{chunksRef.current.length}</span><br/>
                         • Detection Status: <span className={theftDetected ? 'text-red-400 font-bold' : 'text-green-400'}>{theftDetected ? 'THEFT DETECTED' : 'Monitoring'}</span><br/>
