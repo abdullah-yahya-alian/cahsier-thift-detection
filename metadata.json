@@ -1,0 +1,7 @@
+{
+  "name": "Human Pose Analyzer",
+  "description": "Analyze human movement using a live video camera or by uploading an MP4 video. This tool utilizes MediaPipe.js and pre-trained models to overlay movement points and lines onto the video. You can export the results as a new video with the human pose annotations.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

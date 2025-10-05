@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Human Pose Analyzer</title>
+    <!-- MediaPipe Vision Bundle as ES Module (sets window.mp) with simple fallback -->
+    <script type="module">
+      import * as vision from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+      window.mp = { tasks: { vision } };
+    </script>
+    <script type="module">
+      if (!window.mp || !window.mp.tasks || !window.mp.tasks.vision) {
+        import('https://unpkg.com/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs').then(vision => {
+          window.mp = { tasks: { vision } };
+        });
+      }
+    </script>
+    <link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-gray-900">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
