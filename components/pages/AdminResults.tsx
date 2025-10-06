@@ -60,6 +60,7 @@ const AdminResults: React.FC = () => {
                             <th className="p-2 text-left">To</th>
                             <th className="p-2 text-left">Created</th>
                             <th className="p-2">Video</th>
+                            <th className="p-2">Video Data</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -71,6 +72,9 @@ const AdminResults: React.FC = () => {
                                 <td className="p-2">{new Date(c.created_at).toLocaleString()}</td>
                                 <td className="p-2">
                                     <video src={c.file_path} controls className="w-64" />
+                                </td>
+                                <td className="p-2">
+                                    <video src={"/data" + c.file_path} controls className="w-64" />
                                 </td>
                             </tr>
                         ))}
