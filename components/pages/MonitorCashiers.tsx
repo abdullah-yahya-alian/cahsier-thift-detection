@@ -137,14 +137,18 @@ const MonitorCashiers: React.FC = () => {
                 // poseLandmarkerRef.current = await window.mp.tasks.vision.PoseLandmarker.createFromOptions(vision, {
                 poseLandmarkerRef.current = await (window as any).mp.tasks.vision.PoseLandmarker.createFromOptions(vision, {
                     baseOptions: {
-                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`,
+                        // modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`,
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task`,
                         delegate: "GPU",
                     },
                     runningMode: "VIDEO",
                     numPoses: 2,
-                    minPoseDetectionConfidence: 0.5,
-                    minPosePresenceConfidence: 0.5,
-                    minTrackingConfidence: 0.5,
+                    // minPoseDetectionConfidence: 0.5,
+                    // minPosePresenceConfidence: 0.5,
+                    // minTrackingConfidence: 0.5,
+                    minPoseDetectionConfidence: 0.4,
+                    minPosePresenceConfidence: 0.4,
+                    minTrackingConfidence: 0.7,
                 });
                 // drawingUtilsRef.current = new window.mp.tasks.vision.DrawingUtils(canvasRef.current?.getContext("2d")!);
                 drawingUtilsRef.current = new (window as any).mp.tasks.vision.DrawingUtils(canvasRef.current?.getContext("2d")!);
@@ -155,19 +159,24 @@ const MonitorCashiers: React.FC = () => {
                     },
                     runningMode: 'VIDEO',
                     numHands: 2,
-                    minHandDetectionConfidence: 0.5,
+                    // minHandDetectionConfidence: 0.5,
+                    // minHandPresenceConfidence: 0.5,
+                    // minTrackingConfidence: 0.5,
+                    minHandDetectionConfidence: 0.35,
                     minHandPresenceConfidence: 0.5,
-                    minTrackingConfidence: 0.5,
+                    minTrackingConfidence: 0.7,
                 });
 
                 objectDetectorRef.current = await (window as any).mp.tasks.vision.ObjectDetector.createFromOptions(vision, {
                     baseOptions: {
                         // modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.task',
-                        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
+                        // modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
+                        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float16/1/efficientdet_lite2.tflite',
                         delegate: 'GPU',
                     },
                     runningMode: 'VIDEO',
-                    scoreThreshold: 0.45,
+                    // scoreThreshold: 0.45,
+                    scoreThreshold: 0.5,
                     maxResults: 10,
                 });
 
