@@ -58,8 +58,8 @@ const MonitorCashiers: React.FC = () => {
 
     // Offscreen small processing canvas for CPU-friendly operations
     const procCanvasRef = useRef<HTMLCanvasElement | null>(null);
-    const PROC_W = 320;
-    const PROC_H = 180;
+    const PROC_W = 1500;
+    const PROC_H = 1000;
 
     // Baseline (closed) drawer snapshot
     const drawerBaselineRef = useRef<ImageData | null>(null);
