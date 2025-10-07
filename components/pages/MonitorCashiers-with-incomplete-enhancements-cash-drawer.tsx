@@ -58,8 +58,8 @@ const MonitorCashiers: React.FC = () => {
 
     // Offscreen small processing canvas for CPU-friendly operations
     const procCanvasRef = useRef<HTMLCanvasElement | null>(null);
-    const PROC_W = 320;
-    const PROC_H = 180;
+    const PROC_W = 1500;
+    const PROC_H = 1000;
 
     // Baseline (closed) drawer snapshot
     const drawerBaselineRef = useRef<ImageData | null>(null);
@@ -264,7 +264,7 @@ const MonitorCashiers: React.FC = () => {
         return borderAvg - interiorAvg;
     };
 
-    const detectDeviceROI_CPU = (video: HTMLVideoElement): NamedROI | null => {
+    const detectDeviceROI_CPU_old = (video: HTMLVideoElement): NamedROI | null => {
         if (!procCanvasRef.current) return null;
         const img = drawToProc(video);
         const gray = computeGrayscale(img);
@@ -312,12 +312,85 @@ const MonitorCashiers: React.FC = () => {
         return best;
     };
 
-    const getDrawerZoneFromDevice = (dev: NamedROI): NamedROI => {
+    const detectDeviceROI_CPU = (video: HTMLVideoElement): NamedROI | null => {
+        if (!procCanvasRef.current) return null;
+        const img = drawToProc(video);
+        const gray = computeGrayscale(img);
+        const mag = computeSobelMagnitude(gray, PROC_W, PROC_H);
+
+        // Global search over entire frame (not only lower region)
+        const xStart = 5, yStart = 5;
+        const xEnd = PROC_W - 5, yEnd = PROC_H - 5;
+
+        // More scales and a few aspect candidates for robustness
+        const widthRels = [0.20, 0.26, 0.32, 0.38, 0.45, 0.52];
+        const aspectCandidates = [1.4, 1.6, 1.8];
+
+        // Steps tuned for CPU-friendliness at 320x180
+        const stepX = Math.max(8, Math.round(PROC_W * 0.035));
+        const stepY = Math.max(8, Math.round(PROC_H * 0.035));
+
+        // Prefer last known position but still scan the whole screen
+        const last = deviceROIRef.current;
+        const preferX = last ? Math.round(last.x * PROC_W + (last.w * PROC_W) / 2) : Math.floor(PROC_W * 0.6);
+        const preferY = last ? Math.round(last.y * PROC_H + (last.h * PROC_H) / 2) : Math.floor(PROC_H * 0.6);
+
+        let bestScore = -1;
+        let best: NamedROI | null = null;
+
+        for (const wRel of widthRels) {
+            const rw = Math.max(30, Math.floor(PROC_W * wRel));
+            for (const aspect of aspectCandidates) {
+                const rh = Math.max(18, Math.floor(rw / aspect));
+
+                for (let y = yStart; y <= yEnd - rh; y += stepY) {
+                    for (let x = xStart; x <= xEnd - rw; x += stepX) {
+                        const cx = x + rw / 2;
+                        const cy = y + rh / 2;
+
+                        // Small spatial bias toward previous position, but no hard restriction
+                        const distBias = last ? -0.0005 * ((cx - preferX) ** 2 + (cy - preferY) ** 2) : 0;
+
+                        const edgeScore = sampleBorderVsInteriorScore(mag, PROC_W, PROC_H, x, y, rw, rh);
+                        if (edgeScore < 0) continue;
+
+                        const score = edgeScore + distBias;
+                        if (score > bestScore) {
+                            bestScore = score;
+                            best = { x: x / PROC_W, y: y / PROC_H, w: rw / PROC_W, h: rh / PROC_H, name: 'Cash Device' };
+                        }
+                    }
+                }
+            }
+        }
+
+        // Minimum quality bar
+        if (bestScore < 2.0) return null;
+        return best;
+    };
+
+    const getDrawerZoneFromDeviceOld = (dev: NamedROI): NamedROI => {
         // a region below the device where drawer would protrude when opened
         const x = dev.x + dev.w * 0.05;
         const y = dev.y + dev.h * 0.9;
         const w = dev.w * 0.9;
         const h = dev.h * 0.5;
+        return { x, y, w, h, name: 'Drawer' };
+    };
+
+    const getDrawerZoneFromDevice = (dev: NamedROI): NamedROI => {
+        // region below the device where the drawer would protrude when opened
+        const raw = {
+            x: dev.x + dev.w * 0.05,
+            y: dev.y + dev.h * 0.9,
+            w: dev.w * 0.9,
+            h: dev.h * 0.5
+        };
+        // clamp to [0,1] normalized frame
+        const x = Math.max(0, Math.min(raw.x, 1));
+        const y = Math.max(0, Math.min(raw.y, 1));
+        const w = Math.max(0.01, Math.min(raw.w, 1 - x));
+        const h = Math.max(0.01, Math.min(raw.h, 1 - y));
         return { x, y, w, h, name: 'Drawer' };
     };
 
