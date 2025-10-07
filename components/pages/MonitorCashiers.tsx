@@ -32,7 +32,7 @@ const MonitorCashiers: React.FC = () => {
     const drawingUtilsRef = useRef<any>(null);
     const lastHandPositionsRef = useRef<{ left: { x: number, y: number } | null, right: { x: number, y: number } | null }>({ left: null, right: null });
     const theftDetectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    
+
     // Time-based buffer for theft clips
     const timeBufferRef = useRef<{ blob: Blob, timestamp: number }[]>([]);
     const bufferDurationRef = useRef<number>(6000); // 6 seconds buffer
@@ -43,6 +43,66 @@ const MonitorCashiers: React.FC = () => {
 
     const suspiciousFramesRef = useRef(0); // temporal smoothing
 
+    type NamedROI = { x: number; y: number; w: number; h: number; name: string };
+
+    const handLandmarkerRef = useRef<any>(null);
+    const objectDetectorRef = useRef<any>(null);
+    const objFrameCountRef = useRef<number>(0);
+    const lastDetectionsRef = useRef<any[]>([]);
+    const birdsEyePriorityRef = useRef<boolean>(true); // prioritize top-down logic for theft
+    const cashDrawerROIRef = useRef<NamedROI>({ x: 0.62, y: 0.62, w: 0.32, h: 0.30, name: 'Cash Drawer' }); // normalized ROI
+
+    // helper to draw small name labels
+
+    const drawLabel = (ctx: CanvasRenderingContext2D, x: number, y: number, text: string, bg = 'rgba(0,0,0,0.6)', fg = '#fff') => {
+        ctx.save();
+        ctx.font = '12px system-ui, sans-serif';
+        const padX = 6, padY = 3;
+        const metrics = ctx.measureText(text);
+        const w = metrics.width + padX * 2;
+        const h = 16 + padY * 2;
+        ctx.fillStyle = bg;
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        ctx.lineWidth = 1;
+        const rx = x, ry = y - h;
+        if ((ctx as any).roundRect) {
+            ctx.beginPath();
+            (ctx as any).roundRect(rx, ry, w, h, 6);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            ctx.fillRect(rx, ry, w, h);
+            ctx.strokeRect(rx, ry, w, h);
+        }
+        ctx.fillStyle = fg;
+        ctx.fillText(text, x + padX, y - padY);
+        ctx.restore();
+    };
+
+
+    const drawLabelOld = (ctx: CanvasRenderingContext2D, x: number, y: number, text: string, bg = 'rgba(0,0,0,0.6)', fg = '#fff') => {
+        ctx.save();
+        ctx.font = '12px system-ui, sans-serif';
+        const padX = 6, padY = 3;
+        const metrics = ctx.measureText(text);
+        const w = metrics.width + padX * 2;
+        const h = 16 + padY * 2;
+        ctx.fillStyle = bg;
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(x, y - h, w, h, 6);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = fg;
+        ctx.fillText(text, x + padX, y - padY);
+        ctx.restore();
+    };
+
+    // check if any point (normalized) is inside a normalized ROI
+    const anyPointInROI = (points: { x: number; y: number }[], roi: NamedROI) => {
+        return points.some(p => p.x >= roi.x && p.x <= roi.x + roi.w && p.y >= roi.y && p.y <= roi.y + roi.h);
+    };
 
     useEffect(() => {
         const saved = localStorage.getItem('auth_token');
@@ -70,10 +130,12 @@ const MonitorCashiers: React.FC = () => {
     useEffect(() => {
         const initPoseLandmarker = async () => {
             try {
-                const vision = await window.mp.tasks.vision.FilesetResolver.forVisionTasks(
+                // const vision = await window.mp.tasks.vision.FilesetResolver.forVisionTasks(
+                const vision = await (window as any).mp.tasks.vision.FilesetResolver.forVisionTasks(
                     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
                 );
-                poseLandmarkerRef.current = await window.mp.tasks.vision.PoseLandmarker.createFromOptions(vision, {
+                // poseLandmarkerRef.current = await window.mp.tasks.vision.PoseLandmarker.createFromOptions(vision, {
+                poseLandmarkerRef.current = await (window as any).mp.tasks.vision.PoseLandmarker.createFromOptions(vision, {
                     baseOptions: {
                         modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`,
                         delegate: "GPU",
@@ -84,7 +146,34 @@ const MonitorCashiers: React.FC = () => {
                     minPosePresenceConfidence: 0.5,
                     minTrackingConfidence: 0.5,
                 });
-                drawingUtilsRef.current = new window.mp.tasks.vision.DrawingUtils(canvasRef.current?.getContext("2d")!);
+                // drawingUtilsRef.current = new window.mp.tasks.vision.DrawingUtils(canvasRef.current?.getContext("2d")!);
+                drawingUtilsRef.current = new (window as any).mp.tasks.vision.DrawingUtils(canvasRef.current?.getContext("2d")!);
+                handLandmarkerRef.current = await (window as any).mp.tasks.vision.HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+                        delegate: 'GPU',
+                    },
+                    runningMode: 'VIDEO',
+                    numHands: 2,
+                    minHandDetectionConfidence: 0.5,
+                    minHandPresenceConfidence: 0.5,
+                    minTrackingConfidence: 0.5,
+                });
+
+                objectDetectorRef.current = await (window as any).mp.tasks.vision.ObjectDetector.createFromOptions(vision, {
+                    baseOptions: {
+                        // modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.task',
+                        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
+                        delegate: 'GPU',
+                    },
+                    runningMode: 'VIDEO',
+                    scoreThreshold: 0.45,
+                    maxResults: 10,
+                });
+
+                setIsLoadingModel(false);
+                setStatusText("Models loaded. Ready to monitor cashier (pose, hands, objects).");
+
                 setIsLoadingModel(false);
                 setStatusText("Model loaded. Ready to monitor cashier.");
             } catch (error) {
@@ -117,11 +206,14 @@ const MonitorCashiers: React.FC = () => {
             if (poseLandmarkerRef.current) {
                 poseLandmarkerRef.current.close();
             }
+
+            if (handLandmarkerRef.current) handLandmarkerRef.current.close();
+            if (objectDetectorRef.current) objectDetectorRef.current.close();
         };
     }, []);
 
 
-    const detectTheft = useCallback((pose: any[]) => {
+    const detectTheft20251007 = useCallback((pose: any[]) => {
         if (!pose || pose.length < 33) return false;
 
         const lS = pose[IDX.LEFT_SHOULDER];
@@ -175,6 +267,57 @@ const MonitorCashiers: React.FC = () => {
             });
         }
 
+        return isTheft;
+    }, [detectionSensitivity]);
+
+    const detectTheft = useCallback((pose: any[]) => {
+        if (!pose || pose.length < 33) return false;
+
+        const lS = pose[IDX.LEFT_SHOULDER];
+        const rS = pose[IDX.RIGHT_SHOULDER];
+        const lW = pose[IDX.LEFT_WRIST];
+        const rW = pose[IDX.RIGHT_WRIST];
+        const lH = pose[IDX.LEFT_HIP];
+        const rH = pose[IDX.RIGHT_HIP];
+
+        const visOk = (p: any) => (p?.visibility ?? 1) >= 0.4;
+        if (![lS, rS, lW, rW, lH, rH].every(visOk)) return false;
+
+        const dist = (a: any, b: any) => Math.hypot(a.x - b.x, a.y - b.y);
+        const shoulderWidth = dist(lS, rS);
+        const hipWidth = dist(lH, rH);
+        const bodyScale = Math.max(shoulderWidth, hipWidth) || 0.25;
+        if (bodyScale < 0.05) return false;
+
+        // birds-eye priority: relax vertical constraints and rely mostly on distance + x-alignment
+        const birdsEye = birdsEyePriorityRef.current === true;
+
+        const nearHipDist = Math.min(Math.max(detectionSensitivity ?? 0.6, 0.2), 1.0) * bodyScale;
+        const xAlignThresh = (birdsEye ? 0.5 : 0.35) * bodyScale;
+
+        const leftNear =
+            dist(lW, lH) < nearHipDist &&
+            (birdsEye ? true : lW.y > lS.y) &&
+            Math.abs(lW.x - lH.x) < xAlignThresh;
+
+        const rightNear =
+            dist(rW, rH) < nearHipDist &&
+            (birdsEye ? true : rW.y > rS.y) &&
+            Math.abs(rW.x - rH.x) < xAlignThresh;
+
+        // Base temporal smoothing
+        if (leftNear || rightNear) {
+            suspiciousFramesRef.current = Math.min(suspiciousFramesRef.current + 1, 40);
+        } else {
+            suspiciousFramesRef.current = Math.max(suspiciousFramesRef.current - 1, 0);
+        }
+
+        // Extra boost if fingers enter drawer ROI (set by hand detector in predictLoop)
+        if ((window as any).__handInDrawerBoost === true) {
+            suspiciousFramesRef.current = Math.min(suspiciousFramesRef.current + 2, 40);
+        }
+
+        const isTheft = suspiciousFramesRef.current >= 6; // ~0.2s at 30 fps
         return isTheft;
     }, [detectionSensitivity]);
 
@@ -501,12 +644,18 @@ const MonitorCashiers: React.FC = () => {
 
                 drawingUtilsRef.current.drawLandmarks(pose, {
                     radius: (data: any) =>
-                        window.mp.tasks.vision.DrawingUtils.lerp(data.from?.z ?? 0, -0.15, 0.1, 5, 1),
+                        (window as any).mp.tasks.vision.DrawingUtils.lerp(data.from?.z ?? 0, -0.15, 0.1, 5, 1),
                     color: landmarkColor,
                 });
+                // drawingUtilsRef.current.drawConnectors(
+                //     pose,
+                //     window.mp.tasks.vision.PoseLandmarker.POSE_CONNECTIONS,
+                //     { color: connectionColor }
+                // );
+
                 drawingUtilsRef.current.drawConnectors(
                     pose,
-                    window.mp.tasks.vision.PoseLandmarker.POSE_CONNECTIONS,
+                    (window as any).mp.tasks.vision.PoseLandmarker.POSE_CONNECTIONS,
                     { color: connectionColor }
                 );
 
@@ -545,7 +694,123 @@ const MonitorCashiers: React.FC = () => {
                 }
             }
         }
+        //*********** entities labels */
 
+        // const canvas = canvasRef.current!;
+        const ctx = canvas.getContext('2d')!;
+        const W = canvas.width, H = canvas.height;
+
+        // 5.a) Cash Drawer ROI overlay
+        const drawer = cashDrawerROIRef.current;
+        ctx.save();
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(drawer.x * W, drawer.y * H, drawer.w * W, drawer.h * H);
+        drawLabel(ctx, drawer.x * W, drawer.y * H, drawer.name, 'rgba(120, 53, 15, 0.6)', '#ffd38b');
+        ctx.restore();
+
+        // helper to set a global flag each frame for detectTheft boost
+        (window as any).__handInDrawerBoost = false;
+
+        // 5.b) Hands + fingers detection and drawing
+        if (handLandmarkerRef.current) {
+            const handRes = handLandmarkerRef.current.detectForVideo(video, performance.now());
+            if (handRes?.landmarks?.length) {
+                for (const handLm of handRes.landmarks) {
+                    // draw landmarks/connectors
+                    drawingUtilsRef.current.drawLandmarks(handLm, { color: '#fde047', radius: 2.5 });
+                    // drawingUtilsRef.current.drawConnectors(
+                    //     handLm,
+                    //     window.mp.tasks.vision.HandLandmarker.HAND_CONNECTIONS,
+                    //     { color: '#facc15' }
+                    // );
+
+                    drawingUtilsRef.current.drawConnectors(
+                        handLm,
+                        (window as any).mp.tasks.vision.HandLandmarker.HAND_CONNECTIONS,
+                        { color: '#facc15' }
+                    );
+
+                    // check if any fingertip is inside the cash drawer ROI (normalized coords)
+                    // Fingertip indices for MediaPipe Hands: 8, 12, 16, 20
+                    const fingerTips = [8, 12, 16, 20].map(i => ({ x: handLm[i].x, y: handLm[i].y }));
+                    if (anyPointInROI(fingerTips, drawer)) {
+                        (window as any).__handInDrawerBoost = true;
+                        // highlight ROI when hand enters
+                        ctx.save();
+                        ctx.fillStyle = 'rgba(245, 158, 11, 0.15)';
+                        ctx.fillRect(drawer.x * W, drawer.y * H, drawer.w * W, drawer.h * H);
+                        ctx.restore();
+                    }
+                }
+            }
+        }
+
+        // 5.c) Object detection: run every 3 frames for performance
+        objFrameCountRef.current = (objFrameCountRef.current + 1) % 3;
+        if (objectDetectorRef.current && objFrameCountRef.current === 0) {
+            const detRes = objectDetectorRef.current.detectForVideo(video, performance.now());
+            lastDetectionsRef.current = detRes?.detections ?? [];
+        }
+
+        // Draw last detections (boxes + device labels + person role labels)
+        const aliasMap: Record<string, string> = {
+            person: 'Person',
+            keyboard: 'Keyboard',
+            mouse: 'Mouse',
+            laptop: 'Laptop',
+            tv: 'Monitor',
+            'cell phone': 'Phone',
+            cup: 'Cup',
+            bottle: 'Bottle',
+        };
+
+        const personDetections: { bbox: any; score: number }[] = [];
+        for (const d of lastDetectionsRef.current) {
+            if (!d?.boundingBox || !d?.categories?.length) continue;
+            const cat = d.categories[0];
+            const name = aliasMap[cat.categoryName] || cat.categoryName;
+            const score = cat.score ?? 0;
+            if (score < 0.45) continue;
+
+            const bb = d.boundingBox; // bb: originX, originY, width, height (in px)
+            const x = bb.originX, y = bb.originY, w = bb.width, h = bb.height;
+
+            // collect persons for role labeling
+            if ((cat.categoryName || '').toLowerCase() === 'person') {
+                personDetections.push({ bbox: { x, y, w, h }, score });
+            }
+
+            // draw device/person box + label
+            ctx.save();
+            ctx.strokeStyle = name === 'Person' ? '#22d3ee' : '#4ade80';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y, w, h);
+            drawLabel(ctx, x, y, name, name === 'Person' ? 'rgba(11, 57, 69, 0.75)' : 'rgba(11, 69, 36, 0.75)');
+            ctx.restore();
+        }
+
+        // 5.d) Label cashier/client heuristically
+        if (personDetections.length > 0) {
+            // sort by center x from left->right
+            const sorted = personDetections
+                .map(p => ({ ...p, cx: p.bbox.x + p.bbox.w * 0.5 }))
+                .sort((a, b) => a.cx - b.cx);
+
+            // simple heuristic: right-most person is likely Cashier (near register), others are Client(s)
+            const cashier = sorted[sorted.length - 1];
+            if (cashier) {
+                drawLabel(ctx, cashier.bbox.x, cashier.bbox.y - 2, 'Cashier', 'rgba(30,58,138,0.75)', '#bfdbfe');
+            }
+            for (let i = 0; i < sorted.length - 1; i++) {
+                const client = sorted[i];
+                drawLabel(ctx, client.bbox.x, client.bbox.y - 2, 'Client', 'rgba(88,28,135,0.75)', '#f5d0fe');
+            }
+        }
+
+
+        //*********** entities labels */
 
         canvasCtx.restore();
 
@@ -580,7 +845,7 @@ const MonitorCashiers: React.FC = () => {
                 videoRef.current!.src = proxyUrl;
                 videoRef.current!.crossOrigin = 'anonymous';
                 console.log(`🎥 Using ${streamQuality} RTSP stream: ${proxyUrl}`);
-                
+
                 // RTSP stream setup complete
                 console.log('🎥 RTSP stream configured');
 
@@ -607,7 +872,7 @@ const MonitorCashiers: React.FC = () => {
             videoRef.current!.addEventListener('loadeddata', () => {
                 videoRef.current?.play();
                 setIsWebcamOn(true);
-                
+
                 // Stream loaded successfully - sync streamSource with actual video source
                 const detectedStreamType = videoRef.current!.src?.includes('/api/stream') ? 'rtsp' : 'webcam';
                 if (detectedStreamType !== streamSource) {
@@ -619,7 +884,7 @@ const MonitorCashiers: React.FC = () => {
                     setStreamSource(detectedStreamType);
                 }
                 console.log('✅ Stream loaded and ready');
-                
+
                 setStatusText(`Auto-monitoring enabled. Watching for suspicious behavior...`);
                 predictLoop();
                 // Don't auto-start recording - only record when theft is detected
@@ -830,22 +1095,22 @@ const MonitorCashiers: React.FC = () => {
             mediaRecorderRef.current.ondataavailable = (e) => {
                 if (e.data.size > 0) {
                     const currentTime = Date.now();
-                    
+
                     // Add new chunk with timestamp
                     timeBufferRef.current.push({
                         blob: e.data,
                         timestamp: currentTime
                     });
-                    
+
                     // Clean up old chunks (keep only last 6 seconds)
                     const cutoffTime = currentTime - bufferDurationRef.current;
                     timeBufferRef.current = timeBufferRef.current.filter(chunk => chunk.timestamp > cutoffTime);
-                    
+
                     // Also limit by chunk count to prevent memory issues
                     if (timeBufferRef.current.length > maxBufferSizeRef.current) {
                         timeBufferRef.current = timeBufferRef.current.slice(-maxBufferSizeRef.current);
                     }
-                    
+
                     console.log(`📦 Buffer updated: ${timeBufferRef.current.length} chunks, latest: ${new Date(currentTime).toLocaleTimeString()}`);
                 }
             };
@@ -1057,10 +1322,10 @@ const MonitorCashiers: React.FC = () => {
         }
 
         chunksRef.current = [];
-        
+
         // Use actual stream type for recording logic
         console.log('🎬 Starting recording with actual stream type:', actualStreamType);
-        
+
         // Different recording approaches based on actual stream type
         if (actualStreamType === 'webcam') {
             // Use MediaRecorder for webcam streams
@@ -1227,7 +1492,7 @@ const MonitorCashiers: React.FC = () => {
         const paddingAfter = 3000;  // 3 seconds after
         const clipStartTime = theftDetectionTime - paddingBefore;
         const clipEndTime = theftDetectionTime + paddingAfter;
-        
+
         console.log('📐 Clip timing:', {
             theftDetectionTime,
             clipStartTime,
@@ -1240,7 +1505,7 @@ const MonitorCashiers: React.FC = () => {
         // Use ALL chunks from buffer to create a valid video (don't filter by time)
         // This ensures the video stream is not broken
         const allChunks = timeBufferRef.current.map(chunk => chunk.blob);
-        
+
         console.log('🔍 Using all buffer chunks for valid video:', {
             totalChunks: timeBufferRef.current.length,
             bufferTimeRange: timeBufferRef.current.length > 0 ? {
@@ -1248,7 +1513,7 @@ const MonitorCashiers: React.FC = () => {
                 newest: new Date(timeBufferRef.current[timeBufferRef.current.length - 1].timestamp).toLocaleTimeString()
             } : 'No chunks'
         });
-        
+
         if (allChunks.length === 0) {
             console.log('❌ No chunks available in time buffer');
             setStatusText("❌ No video data available for theft clip.");
@@ -1274,7 +1539,7 @@ const MonitorCashiers: React.FC = () => {
             // Create file with proper naming and metadata
             const timestamp = new Date(theftDetectionTime).toISOString().replace(/[:.]/g, '-');
             const fileName = `theft_incident_${timestamp}.webm`;
-            const file = new File([blob], fileName, { 
+            const file = new File([blob], fileName, {
                 type: 'video/webm',
                 lastModified: theftDetectionTime
             });
@@ -1807,10 +2072,25 @@ const MonitorCashiers: React.FC = () => {
                         <br />
                         <strong>Sensitivity:</strong> Lower values = more sensitive (more false positives), higher values = less sensitive.<br />
                         <strong>Recording:</strong> Records 8 seconds only when theft is detected (8s total clip duration, no continuous recording).
+
+                        <br />
+                        <br />
+                        <br />
+                        <button
+                            onClick={() => {
+                                birdsEyePriorityRef.current = !birdsEyePriorityRef.current;
+                                setStatusText(`Birds-eye priority: ${birdsEyePriorityRef.current ? 'ON' : 'OFF'}`);
+                            }}
+                            className={`px-3 py-2 text-sm rounded-md ${birdsEyePriorityRef.current ? 'bg-indigo-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+                            title="Prioritize top-down logic in theft detection"
+                        >
+                            Birds-eye Priority: {birdsEyePriorityRef.current ? 'ON' : 'OFF'}
+                        </button>
+
                     </div>
                 </div>
             </div>
-        </div>
+        </div >
     );
 };
 
